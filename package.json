@@ -9,8 +9,16 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": ["azure", "cli", "profile", "account", "switcher"],
-  "author": "Your Name",
+  "author": "O6lvl4 <hiromi.motodera@aid-on.org>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/O6lvl4/azprofile.git"
+  },
+  "bugs": {
+    "url": "https://github.com/O6lvl4/azprofile/issues"
+  },
+  "homepage": "https://github.com/O6lvl4/azprofile#readme",
   "dependencies": {
     "zx": "^7.2.3"
   },
