@@ -1,6 +1,7 @@
 {
   "name": "azprofile",
   "version": "1.0.0",
+  "type": "module",
   "description": "Azure CLI Profile Manager - Easy switching between multiple Azure accounts",
   "bin": {
     "azprofile": "./azprofile"
@@ -8,7 +9,13 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["azure", "cli", "profile", "account", "switcher"],
+  "keywords": [
+    "azure",
+    "cli",
+    "profile",
+    "account",
+    "switcher"
+  ],
   "author": "O6lvl4 <hiromi.motodera@aid-on.org>",
   "license": "MIT",
   "repository": {
@@ -20,7 +27,7 @@
   },
   "homepage": "https://github.com/O6lvl4/azprofile#readme",
   "dependencies": {
-    "zx": "^7.2.3"
+    "zx": "^8.8.1"
   },
   "engines": {
     "node": ">=16.0.0"
