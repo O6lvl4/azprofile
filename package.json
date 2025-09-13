@@ -1,6 +1,6 @@
 {
-  "name": "azprofile",
-  "version": "2.0.0",
+  "name": "azprofile-cli",
+  "version": "2.0.1",
   "description": "Azure CLI Profile Manager - Easy switching between multiple Azure accounts",
   "bin": {
     "azprofile": "./azprofile"

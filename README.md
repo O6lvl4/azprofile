@@ -1,11 +1,11 @@
-# azprofile
+# azprofile-cli
 
 Azure CLI Profile Manager - Easy switching between multiple Azure accounts
 
 ## Installation
 
 ```bash
-npm install -g azprofile
+npm install -g azprofile-cli
 ```
 
 Or install from source:
@@ -153,8 +153,8 @@ source ~/.zshrc           # restart shell
 
 Try reinstalling:
 ```bash
-npm uninstall -g azprofile
-npm install -g azprofile
+npm uninstall -g azprofile-cli
+npm install -g azprofile-cli
 azprofile setup ~/.zshrc
 ```
 
