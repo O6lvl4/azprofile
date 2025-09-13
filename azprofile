@@ -1,272 +1,422 @@
-#!/usr/bin/env npx zx
+#!/bin/bash
 
-import { question } from 'zx'
-import path from 'path'
-import fs from 'fs/promises'
+# azprofile - Azure CLI Profile Manager
+# Version: 2.0.0 (Shell Script Edition)
 
-const PROFILES_DIR = path.join(process.env.HOME, '.azure-profiles')
-const CONFIG_FILE = path.join(PROFILES_DIR, 'config.json')
+set -eo pipefail
 
-// プロファイル設定を読み込み
-async function loadConfig() {
-  try {
-    const content = await fs.readFile(CONFIG_FILE, 'utf8')
-    return JSON.parse(content)
-  } catch {
-    return { profiles: {}, current: null }
-  }
+PROFILES_DIR="$HOME/.azure-profiles"
+CONFIG_FILE="$PROFILES_DIR/config"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+GRAY='\033[0;37m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Helper functions
+error() {
+  echo -e "${RED}❌ $1${NC}" >&2
 }
 
-// プロファイル設定を保存
-async function saveConfig(config) {
-  await fs.mkdir(PROFILES_DIR, { recursive: true })
-  await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2))
+success() {
+  echo -e "${GREEN}✅ $1${NC}"
 }
 
-// プロファイル追加
-async function addProfile(name) {
-  const config = await loadConfig()
-  const profileDir = path.join(PROFILES_DIR, name)
-  
-  await fs.mkdir(profileDir, { recursive: true })
-  
-  config.profiles[name] = {
-    name,
-    path: profileDir,
-    created: new Date().toISOString()
-  }
-  
-  await saveConfig(config)
-  
-  console.log(chalk.green(`✅ Profile '${name}' added`))
-  console.log(chalk.gray(`   Config directory: ${profileDir}`))
-  
-  // 初回ログインを促す
-  const login = await question(`Login to Azure now? (y/N): `)
-  if (login.toLowerCase() === 'y') {
-    await switchProfile(name)
-    await $`az login`
-  }
+info() {
+  echo -e "${BLUE}🔄 $1${NC}"
 }
 
-// プロファイル切り替え
-async function switchProfile(name) {
-  const config = await loadConfig()
-  
-  if (!config.profiles[name]) {
-    console.error(chalk.red(`❌ Profile '${name}' not found`))
-    process.exit(1)
-  }
-  
-  const profilePath = config.profiles[name].path
-  process.env.AZURE_CONFIG_DIR = profilePath
-  
-  config.current = name
-  await saveConfig(config)
-  
-  console.log(chalk.blue(`🔄 Switched to profile '${name}'`))
-  console.log(chalk.gray(`   AZURE_CONFIG_DIR=${profilePath}`))
+warn() {
+  echo -e "${YELLOW}$1${NC}"
 }
 
-// プロファイル一覧表示
-async function listProfiles() {
-  const config = await loadConfig()
+gray() {
+  echo -e "${GRAY}$1${NC}"
+}
+
+bold() {
+  echo -e "${BOLD}$1${NC}"
+}
+
+# Ensure profiles directory exists
+ensure_profiles_dir() {
+  mkdir -p "$PROFILES_DIR"
+}
+
+# Load config (simple key=value format instead of JSON)
+load_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    source "$CONFIG_FILE"
+  fi
+}
+
+# Save config
+save_config() {
+  ensure_profiles_dir
+  cat > "$CONFIG_FILE" << EOF
+# azprofile configuration
+CURRENT_PROFILE="$CURRENT_PROFILE"
+EOF
   
-  if (Object.keys(config.profiles).length === 0) {
-    console.log(chalk.yellow('No profiles found'))
-    console.log(chalk.gray('Use: azprofile add <name>'))
+  # Save profile list  
+  for profile in $(ls "$PROFILES_DIR" 2>/dev/null | grep -v config || true); do
+    if [[ -d "$PROFILES_DIR/$profile" ]]; then
+      echo "PROFILE_${profile//-/_}=\"$(date -r "$PROFILES_DIR/$profile" +%Y-%m-%d)\"" >> "$CONFIG_FILE"
+    fi
+  done
+}
+
+# Add new profile
+add_profile() {
+  local name="$1"
+  
+  if [[ -z "$name" ]]; then
+    error "Profile name required"
+    exit 1
+  fi
+  
+  ensure_profiles_dir
+  local profile_dir="$PROFILES_DIR/$name"
+  
+  if [[ -d "$profile_dir" ]]; then
+    error "Profile '$name' already exists"
+    exit 1
+  fi
+  
+  mkdir -p "$profile_dir"
+  load_config
+  
+  success "Profile '$name' added"
+  gray "   Config directory: $profile_dir"
+  
+  # Ask for initial login
+  echo -n "Login to Azure now? (y/N): "
+  read -r login
+  if [[ "$login" =~ ^[Yy]$ ]]; then
+    export AZURE_CONFIG_DIR="$profile_dir"
+    az login
+  fi
+  
+  save_config
+}
+
+# List profiles
+list_profiles() {
+  ensure_profiles_dir
+  load_config
+  
+  local profiles=($(ls "$PROFILES_DIR" 2>/dev/null | grep -v config || true))
+  
+  if [[ ${#profiles[@]} -eq 0 ]]; then
+    warn "No profiles found"
+    gray "Use: azprofile add <name>"
     return
-  }
+  fi
   
-  console.log(chalk.bold('Azure Profiles:'))
+  bold "Azure Profiles:"
   
-  for (const [name, profile] of Object.entries(config.profiles)) {
-    const current = name === config.current ? chalk.green('→ ') : '  '
-    console.log(`${current}${name} ${chalk.gray(`(${profile.created.split('T')[0]})`)}`)
-  }
+  for profile in "${profiles[@]}"; do
+    if [[ -d "$PROFILES_DIR/$profile" ]]; then
+      local current_marker="  "
+      if [[ "${CURRENT_PROFILE:-}" == "$profile" ]]; then
+        current_marker="$(echo -e "${GREEN}→${NC} ")"
+      fi
+      local date_created=$(date -r "$PROFILES_DIR/$profile" +%Y-%m-%d)
+      echo -e "${current_marker}$profile $(echo -e "${GRAY}($date_created)${NC}")"
+    fi
+  done
 }
 
-// 現在のプロファイル表示
-async function currentProfile() {
-  const config = await loadConfig()
+# Switch profile (persistent)
+switch_profile() {
+  local name="$1"
   
-  if (!config.current) {
-    console.log(chalk.yellow('No profile selected'))
+  if [[ -z "$name" ]]; then
+    error "Profile name required"
+    exit 1
+  fi
+  
+  if [[ ! -d "$PROFILES_DIR/$name" ]]; then
+    error "Profile '$name' not found"
+    exit 1
+  fi
+  
+  load_config
+  CURRENT_PROFILE="$name"
+  save_config
+  
+  info "Switched to profile '$name'"
+  gray "   AZURE_CONFIG_DIR=$PROFILES_DIR/$name"
+}
+
+# Use profile (for sourcing)
+use_profile() {
+  local name="$1"
+  
+  if [[ -z "$name" ]]; then
+    error "Profile name required"
+    return 1
+  fi
+  
+  if [[ ! -d "$PROFILES_DIR/$name" ]]; then
+    error "Profile '$name' not found"
+    return 1
+  fi
+  
+  export AZURE_CONFIG_DIR="$PROFILES_DIR/$name"
+  load_config
+  CURRENT_PROFILE="$name"
+  save_config
+  
+  info "Using profile '$name'"
+  gray "   AZURE_CONFIG_DIR=$AZURE_CONFIG_DIR"
+}
+
+# Simple wrapper for direct sourcing
+azprofile_use() {
+  local name="$1"
+  if [[ ! -d "$PROFILES_DIR/$name" ]]; then
+    error "Profile '$name' not found"
+    return 1
+  fi
+  export AZURE_CONFIG_DIR="$PROFILES_DIR/$name"
+  info "Using profile '$name'"
+  gray "   AZURE_CONFIG_DIR=$AZURE_CONFIG_DIR"
+}
+
+# Current profile status
+current_profile() {
+  load_config
+  
+  if [[ -z "${CURRENT_PROFILE:-}" ]]; then
+    warn "No profile selected"
     return
-  }
+  fi
   
-  console.log(chalk.blue(`Current profile: ${config.current}`))
-  console.log(chalk.gray(`Config dir: ${config.profiles[config.current].path}`))
+  info "Current profile: $CURRENT_PROFILE"
+  gray "Config dir: $PROFILES_DIR/$CURRENT_PROFILE"
   
-  // Azure アカウント情報も表示
-  try {
-    process.env.AZURE_CONFIG_DIR = config.profiles[config.current].path
-    await $`az account show --query "{name:name, id:id, tenantId:tenantId}" -o table`
-  } catch {
-    console.log(chalk.yellow('Not logged in to Azure'))
-  }
+  # Show Azure account info if available
+  if [[ -n "${AZURE_CONFIG_DIR:-}" ]] && command -v az >/dev/null 2>&1; then
+    echo
+    if az account show --query "{name:name, id:id, tenantId:tenantId}" -o table 2>/dev/null; then
+      :
+    else
+      warn "Not logged in to Azure"
+    fi
+  fi
 }
 
-// プロファイル削除
-async function removeProfile(name) {
-  const config = await loadConfig()
+# Remove profile
+remove_profile() {
+  local name="$1"
   
-  if (!config.profiles[name]) {
-    console.error(chalk.red(`❌ Profile '${name}' not found`))
-    process.exit(1)
-  }
+  if [[ -z "$name" ]]; then
+    error "Profile name required"
+    exit 1
+  fi
   
-  const confirm = await question(`Delete profile '${name}'? (y/N): `)
-  if (confirm.toLowerCase() !== 'y') {
-    console.log('Cancelled')
+  if [[ ! -d "$PROFILES_DIR/$name" ]]; then
+    error "Profile '$name' not found"
+    exit 1
+  fi
+  
+  echo -n "Delete profile '$name'? (y/N): "
+  read -r confirm
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    echo "Cancelled"
     return
-  }
+  fi
   
-  // ディレクトリ削除
-  await fs.rm(config.profiles[name].path, { recursive: true, force: true })
+  rm -rf "$PROFILES_DIR/$name"
   
-  // 設定から削除
-  delete config.profiles[name]
-  if (config.current === name) {
-    config.current = null
-  }
+  load_config
+  if [[ "${CURRENT_PROFILE:-}" == "$name" ]]; then
+    CURRENT_PROFILE=""
+  fi
+  save_config
   
-  await saveConfig(config)
-  console.log(chalk.green(`✅ Profile '${name}' removed`))
+  success "Profile '$name' removed"
 }
 
-// コマンド実行
-async function execCommand(profileName, command) {
-  const config = await loadConfig()
+# Execute command with profile
+exec_command() {
+  local profile_name="$1"
+  shift
   
-  if (!config.profiles[profileName]) {
-    console.error(chalk.red(`❌ Profile '${profileName}' not found`))
-    process.exit(1)
-  }
+  if [[ -z "$profile_name" ]]; then
+    error "Profile name required"
+    exit 1
+  fi
   
-  process.env.AZURE_CONFIG_DIR = config.profiles[profileName].path
+  if [[ ! -d "$PROFILES_DIR/$profile_name" ]]; then
+    error "Profile '$profile_name' not found"
+    exit 1
+  fi
   
-  console.log(chalk.gray(`Executing with profile '${profileName}': ${command.join(' ')}`))
+  gray "Executing with profile '$profile_name': $*"
   
-  try {
-    await $`${command}`
-  } catch (error) {
-    process.exit(error.exitCode || 1)
-  }
+  export AZURE_CONFIG_DIR="$PROFILES_DIR/$profile_name"
+  "$@"
 }
 
-// プロファイル使用（環境変数エクスポート用）
-async function useProfile(name) {
-  const config = await loadConfig()
+# Setup shell integration
+setup_shell() {
+  local config_file="$1"
   
-  if (!config.profiles[name]) {
-    console.error(chalk.red(`❌ Profile '${name}' not found`))
-    process.exit(1)
-  }
+  if [[ -z "$config_file" ]]; then
+    error "Config file path required"
+    echo "Usage: azprofile setup ~/.zshrc"
+    echo "       azprofile setup ~/.bashrc"
+    exit 1
+  fi
   
-  const profilePath = config.profiles[name].path
+  if [[ ! -f "$config_file" ]]; then
+    warn "Config file '$config_file' does not exist. Creating it..."
+    touch "$config_file"
+  fi
   
-  // シェル設定用のコマンドを出力（evalで使用）
-  console.log(`export AZURE_CONFIG_DIR="${profilePath}"`)
-  console.log(`# Profile '${name}' activated. AZURE_CONFIG_DIR=${profilePath}`)
+  # Check if already installed
+  if grep -q "# azprofile integration" "$config_file" 2>/dev/null; then
+    warn "azprofile integration already exists in $config_file"
+    echo -n "Overwrite? (y/N): "
+    read -r confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+      echo "Setup cancelled"
+      return
+    fi
+    # Remove existing integration
+    sed -i.bak '/# azprofile integration/,/# end azprofile integration/d' "$config_file"
+  fi
+  
+  # Add integration
+  cat >> "$config_file" << 'EOF'
+
+# azprofile integration
+azprofile() {
+  local cmd="$1"
+  
+  if [[ "$cmd" == "use" && -n "$2" ]]; then
+    # Special handling for 'use' command to set environment variable directly
+    local profile_name="$2"
+    if [[ -d "$HOME/.azure-profiles/$profile_name" ]]; then
+      export AZURE_CONFIG_DIR="$HOME/.azure-profiles/$profile_name"
+      echo -e "\033[0;34m🔄 Using profile '$profile_name'\033[0m"
+      echo -e "\033[0;37m   AZURE_CONFIG_DIR=$AZURE_CONFIG_DIR\033[0m"
+    else
+      echo -e "\033[0;31m❌ Profile '$profile_name' not found\033[0m" >&2
+      return 1
+    fi
+  else
+    # Pass through to original azprofile command
+    command azprofile "$@"
+  fi
+}
+# end azprofile integration
+EOF
+
+  success "azprofile integration added to $config_file"
+  info "Available commands after restarting shell:"
+  gray "  azprofile use <profile>  - Switch to profile (no source needed!)"
+  echo
+  warn "Please restart your shell or run: source $config_file"
 }
 
-// ヘルプ表示
-function showHelp() {
-  console.log(`
-${chalk.bold('azprofile')} - Azure CLI Profile Manager
+# Show help
+show_help() {
+  cat << 'EOF'
+azprofile - Azure CLI Profile Manager
 
-${chalk.bold('USAGE:')}
+USAGE:
   azprofile <command> [options]
+  source azprofile use <name>    # Recommended for profile switching
 
-${chalk.bold('COMMANDS:')}
+COMMANDS:
   add <name>              Add a new profile
   switch <name>           Switch to profile (persistent)
-  use <name>              Use profile in current shell (temporary)
-  list                    List all profiles  
+  use <name>              Use profile in current shell (requires source)
+  list                    List all profiles
   current                 Show current profile
   remove <name>           Remove profile
   exec <name> -- <cmd>    Execute command with profile
+  setup <config-file>     Setup shell integration (e.g., ~/.zshrc)
   help                    Show this help
 
-${chalk.bold('EXAMPLES:')}
+EXAMPLES:
+  azprofile setup ~/.zshrc         # Setup shell integration
   azprofile add work
   azprofile switch personal
-  eval "$(azprofile use work)"     # Set env vars in current shell
+  source azprofile use work        # Set env vars in current shell
+  az account show                  # Uses work profile
   azprofile exec work -- az account show
-  azprofile exec personal -- azd up
-`)
-}
-
-// メイン処理
-async function main() {
-  // process.argv: [node, zx, azprofile, command, args...]
-  // We want to skip the first 3 elements
-  const [command, ...args] = process.argv.slice(3)
   
-  switch (command) {
-    case 'add':
-      if (!args[0]) {
-        console.error(chalk.red('❌ Profile name required'))
-        process.exit(1)
-      }
-      await addProfile(args[0])
-      break
-      
-    case 'switch':
-      if (!args[0]) {
-        console.error(chalk.red('❌ Profile name required'))
-        process.exit(1)
-      }
-      await switchProfile(args[0])
-      break
-      
-    case 'use':
-      if (!args[0]) {
-        console.error(chalk.red('❌ Profile name required'))
-        process.exit(1)
-      }
-      await useProfile(args[0])
-      break
-      
-    case 'list':
-      await listProfiles()
-      break
-      
-    case 'current':
-      await currentProfile()
-      break
-      
-    case 'remove':
-    case 'rm':
-      if (!args[0]) {
-        console.error(chalk.red('❌ Profile name required'))
-        process.exit(1)
-      }
-      await removeProfile(args[0])
-      break
-      
-    case 'exec':
-      const execIndex = args.indexOf('--')
-      if (execIndex === -1 || execIndex === 0) {
-        console.error(chalk.red('❌ Usage: azprofile exec <profile> -- <command>'))
-        process.exit(1)
-      }
-      
-      const profileName = args[0]
-      const command = args.slice(execIndex + 1)
-      await execCommand(profileName, command)
-      break
-      
-    case 'help':
-    case '--help':
-    case '-h':
-    default:
-      showHelp()
-  }
+AFTER SETUP:
+  azprofile use work               # Simple profile switching (no source!)
+  azprofile list                   # List profiles  
+  azprofile add personal           # Add profile
+
+NOTE: Setup shell integration with 'azprofile setup ~/.zshrc' to use 
+      'azprofile use <name>' without source command.
+EOF
 }
 
-main().catch(error => {
-  console.error(chalk.red('Error:'), error.message)
-  process.exit(1)
-})
+# Main function
+main() {
+  local command="${1:-help}"
+  
+  case "$command" in
+    "add")
+      add_profile "${2:-}"
+      ;;
+    "switch")
+      switch_profile "${2:-}"
+      ;;
+    "use")
+      use_profile "${2:-}"
+      ;;
+    "list")
+      list_profiles
+      ;;
+    "current")
+      current_profile
+      ;;
+    "remove"|"rm")
+      remove_profile "${2:-}"
+      ;;
+    "setup")
+      setup_shell "${2:-}"
+      ;;
+    "exec")
+      if [[ $# -lt 3 ]] || [[ "$3" != "--" ]]; then
+        error "Usage: azprofile exec <profile> -- <command>"
+        exit 1
+      fi
+      local profile_name="$2"
+      shift 3  # Remove 'exec', profile_name, and '--'
+      exec_command "$profile_name" "$@"
+      ;;
+    "help"|"--help"|"-h")
+      show_help
+      ;;
+    *)
+      show_help
+      ;;
+  esac
+}
+
+# Initialize variables
+CURRENT_PROFILE=""
+
+# Run main function if script is executed directly (not sourced)
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
+  main "$@"
+else
+  # When sourced, execute the command directly
+  if [[ $# -gt 0 ]]; then
+    main "$@"
+  fi
+fi

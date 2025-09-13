@@ -1,0 +1,272 @@
+#!/usr/bin/env npx zx
+
+import { question } from 'zx'
+import path from 'path'
+import fs from 'fs/promises'
+
+const PROFILES_DIR = path.join(process.env.HOME, '.azure-profiles')
+const CONFIG_FILE = path.join(PROFILES_DIR, 'config.json')
+
+// プロファイル設定を読み込み
+async function loadConfig() {
+  try {
+    const content = await fs.readFile(CONFIG_FILE, 'utf8')
+    return JSON.parse(content)
+  } catch {
+    return { profiles: {}, current: null }
+  }
+}
+
+// プロファイル設定を保存
+async function saveConfig(config) {
+  await fs.mkdir(PROFILES_DIR, { recursive: true })
+  await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2))
+}
+
+// プロファイル追加
+async function addProfile(name) {
+  const config = await loadConfig()
+  const profileDir = path.join(PROFILES_DIR, name)
+  
+  await fs.mkdir(profileDir, { recursive: true })
+  
+  config.profiles[name] = {
+    name,
+    path: profileDir,
+    created: new Date().toISOString()
+  }
+  
+  await saveConfig(config)
+  
+  console.log(chalk.green(`✅ Profile '${name}' added`))
+  console.log(chalk.gray(`   Config directory: ${profileDir}`))
+  
+  // 初回ログインを促す
+  const login = await question(`Login to Azure now? (y/N): `)
+  if (login.toLowerCase() === 'y') {
+    await switchProfile(name)
+    await $`az login`
+  }
+}
+
+// プロファイル切り替え
+async function switchProfile(name) {
+  const config = await loadConfig()
+  
+  if (!config.profiles[name]) {
+    console.error(chalk.red(`❌ Profile '${name}' not found`))
+    process.exit(1)
+  }
+  
+  const profilePath = config.profiles[name].path
+  process.env.AZURE_CONFIG_DIR = profilePath
+  
+  config.current = name
+  await saveConfig(config)
+  
+  console.log(chalk.blue(`🔄 Switched to profile '${name}'`))
+  console.log(chalk.gray(`   AZURE_CONFIG_DIR=${profilePath}`))
+}
+
+// プロファイル一覧表示
+async function listProfiles() {
+  const config = await loadConfig()
+  
+  if (Object.keys(config.profiles).length === 0) {
+    console.log(chalk.yellow('No profiles found'))
+    console.log(chalk.gray('Use: azprofile add <name>'))
+    return
+  }
+  
+  console.log(chalk.bold('Azure Profiles:'))
+  
+  for (const [name, profile] of Object.entries(config.profiles)) {
+    const current = name === config.current ? chalk.green('→ ') : '  '
+    console.log(`${current}${name} ${chalk.gray(`(${profile.created.split('T')[0]})`)}`)
+  }
+}
+
+// 現在のプロファイル表示
+async function currentProfile() {
+  const config = await loadConfig()
+  
+  if (!config.current) {
+    console.log(chalk.yellow('No profile selected'))
+    return
+  }
+  
+  console.log(chalk.blue(`Current profile: ${config.current}`))
+  console.log(chalk.gray(`Config dir: ${config.profiles[config.current].path}`))
+  
+  // Azure アカウント情報も表示
+  try {
+    process.env.AZURE_CONFIG_DIR = config.profiles[config.current].path
+    await $`az account show --query "{name:name, id:id, tenantId:tenantId}" -o table`
+  } catch {
+    console.log(chalk.yellow('Not logged in to Azure'))
+  }
+}
+
+// プロファイル削除
+async function removeProfile(name) {
+  const config = await loadConfig()
+  
+  if (!config.profiles[name]) {
+    console.error(chalk.red(`❌ Profile '${name}' not found`))
+    process.exit(1)
+  }
+  
+  const confirm = await question(`Delete profile '${name}'? (y/N): `)
+  if (confirm.toLowerCase() !== 'y') {
+    console.log('Cancelled')
+    return
+  }
+  
+  // ディレクトリ削除
+  await fs.rm(config.profiles[name].path, { recursive: true, force: true })
+  
+  // 設定から削除
+  delete config.profiles[name]
+  if (config.current === name) {
+    config.current = null
+  }
+  
+  await saveConfig(config)
+  console.log(chalk.green(`✅ Profile '${name}' removed`))
+}
+
+// コマンド実行
+async function execCommand(profileName, command) {
+  const config = await loadConfig()
+  
+  if (!config.profiles[profileName]) {
+    console.error(chalk.red(`❌ Profile '${profileName}' not found`))
+    process.exit(1)
+  }
+  
+  process.env.AZURE_CONFIG_DIR = config.profiles[profileName].path
+  
+  console.log(chalk.gray(`Executing with profile '${profileName}': ${command.join(' ')}`))
+  
+  try {
+    await $`${command}`
+  } catch (error) {
+    process.exit(error.exitCode || 1)
+  }
+}
+
+// プロファイル使用（環境変数エクスポート用）
+async function useProfile(name) {
+  const config = await loadConfig()
+  
+  if (!config.profiles[name]) {
+    console.error(chalk.red(`❌ Profile '${name}' not found`))
+    process.exit(1)
+  }
+  
+  const profilePath = config.profiles[name].path
+  
+  // シェル設定用のコマンドを出力（evalで使用）
+  console.log(`export AZURE_CONFIG_DIR="${profilePath}"`)
+  console.log(`# Profile '${name}' activated. AZURE_CONFIG_DIR=${profilePath}`)
+}
+
+// ヘルプ表示
+function showHelp() {
+  console.log(`
+${chalk.bold('azprofile')} - Azure CLI Profile Manager
+
+${chalk.bold('USAGE:')}
+  azprofile <command> [options]
+
+${chalk.bold('COMMANDS:')}
+  add <name>              Add a new profile
+  switch <name>           Switch to profile (persistent)
+  use <name>              Use profile in current shell (temporary)
+  list                    List all profiles  
+  current                 Show current profile
+  remove <name>           Remove profile
+  exec <name> -- <cmd>    Execute command with profile
+  help                    Show this help
+
+${chalk.bold('EXAMPLES:')}
+  azprofile add work
+  azprofile switch personal
+  eval "$(azprofile use work)"     # Set env vars in current shell
+  azprofile exec work -- az account show
+  azprofile exec personal -- azd up
+`)
+}
+
+// メイン処理
+async function main() {
+  // process.argv: [node, zx, azprofile, command, args...]
+  // We want to skip the first 3 elements
+  const [command, ...args] = process.argv.slice(3)
+  
+  switch (command) {
+    case 'add':
+      if (!args[0]) {
+        console.error(chalk.red('❌ Profile name required'))
+        process.exit(1)
+      }
+      await addProfile(args[0])
+      break
+      
+    case 'switch':
+      if (!args[0]) {
+        console.error(chalk.red('❌ Profile name required'))
+        process.exit(1)
+      }
+      await switchProfile(args[0])
+      break
+      
+    case 'use':
+      if (!args[0]) {
+        console.error(chalk.red('❌ Profile name required'))
+        process.exit(1)
+      }
+      await useProfile(args[0])
+      break
+      
+    case 'list':
+      await listProfiles()
+      break
+      
+    case 'current':
+      await currentProfile()
+      break
+      
+    case 'remove':
+    case 'rm':
+      if (!args[0]) {
+        console.error(chalk.red('❌ Profile name required'))
+        process.exit(1)
+      }
+      await removeProfile(args[0])
+      break
+      
+    case 'exec':
+      const execIndex = args.indexOf('--')
+      if (execIndex === -1 || execIndex === 0) {
+        console.error(chalk.red('❌ Usage: azprofile exec <profile> -- <command>'))
+        process.exit(1)
+      }
+      
+      const profileName = args[0]
+      const command = args.slice(execIndex + 1)
+      await execCommand(profileName, command)
+      break
+      
+    case 'help':
+    case '--help':
+    case '-h':
+    default:
+      showHelp()
+  }
+}
+
+main().catch(error => {
+  console.error(chalk.red('Error:'), error.message)
+  process.exit(1)
+})
